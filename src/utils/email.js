@@ -20,6 +20,7 @@ export async function sendOtpEmail(to, otp) {
     port: 587,
     secure: false,
     auth: { user, pass },
+    connectionOptions: { family: 4 },
   });
 
   const from = process.env.SMTP_FROM || user;
