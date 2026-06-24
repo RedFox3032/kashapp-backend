@@ -40,7 +40,8 @@ router.post('/send-otp', async (req, res) => {
 
   // Fire-and-forget: respond immediately, send email in background
   sendOtpEmail(email, code)
-    .catch(err => console.error(`[EMAIL] Failed to send to ${email}:`, err.message));
+    .then(() => {})
+    .catch(err => console.error(`[EMAIL] Failed to send to ${email}:`, err));
 
   const appDebug = process.env.APP_DEBUG !== 'false';
   res.json({

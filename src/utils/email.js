@@ -5,19 +5,16 @@ let transporter = null;
 function getTransporter() {
   if (transporter) return transporter;
 
-  const host = process.env.SMTP_HOST;
-  const port = parseInt(process.env.SMTP_PORT || '587', 10);
   const user = process.env.SMTP_USER;
   const pass = process.env.SMTP_PASS;
 
-  if (!host || !user || !pass) {
-    return null;
-  }
+  console.log(`[EMAIL] SMTP_USER=${user ? 'set (' + user + ')' : 'NOT SET'}`);
+  console.log(`[EMAIL] SMTP_PASS=${pass ? 'set (' + pass.length + ' chars)' : 'NOT SET'}`);
+
+  if (!user || !pass) return null;
 
   transporter = nodemailer.createTransport({
-    host,
-    port,
-    secure: port === 465,
+    service: 'gmail',
     auth: { user, pass },
   });
 
@@ -25,6 +22,8 @@ function getTransporter() {
 }
 
 export async function sendOtpEmail(to, otp) {
+  console.log(`[EMAIL] sendOtpEmail called: to=${to}`);
+
   const t = getTransporter();
   if (!t) {
     console.log(`[DEV] OTP for ${to}: ${otp}`);
@@ -33,14 +32,14 @@ export async function sendOtpEmail(to, otp) {
 
   const from = process.env.SMTP_FROM || process.env.SMTP_USER;
 
-  await t.sendMail({
+  const info = await t.sendMail({
     from: `"KashApp" <${from}>`,
     to,
     subject: 'Your KashApp Verification Code',
     html: buildEmailHtml(otp),
   });
 
-  console.log(`[EMAIL] OTP sent to ${to}`);
+  console.log(`[EMAIL] OTP sent to ${to} — messageId=${info.messageId}`);
 }
 
 function buildEmailHtml(otp) {
