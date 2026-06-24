@@ -1,43 +1,38 @@
 import nodemailer from 'nodemailer';
 
-let transporter = null;
-
-function getTransporter() {
-  if (transporter) return transporter;
-
-  const user = process.env.SMTP_USER;
-  const pass = process.env.SMTP_PASS;
-
-  console.log(`[EMAIL] SMTP_USER=${user ? 'set (' + user + ')' : 'NOT SET'}`);
-  console.log(`[EMAIL] SMTP_PASS=${pass ? 'set (' + pass.length + ' chars)' : 'NOT SET'}`);
-
-  if (!user || !pass) return null;
-
-  transporter = nodemailer.createTransport({
-    service: 'gmail',
-    auth: { user, pass },
-  });
-
-  return transporter;
+function timeout(ms) {
+  return new Promise((_, reject) =>
+    setTimeout(() => reject(new Error(`Operation timed out after ${ms}ms`)), ms)
+  );
 }
 
 export async function sendOtpEmail(to, otp) {
-  console.log(`[EMAIL] sendOtpEmail called: to=${to}`);
+  const user = process.env.SMTP_USER;
+  const pass = process.env.SMTP_PASS;
 
-  const t = getTransporter();
-  if (!t) {
+  if (!user || !pass) {
     console.log(`[DEV] OTP for ${to}: ${otp}`);
     return;
   }
 
-  const from = process.env.SMTP_FROM || process.env.SMTP_USER;
-
-  const info = await t.sendMail({
-    from: `"KashApp" <${from}>`,
-    to,
-    subject: 'Your KashApp Verification Code',
-    html: buildEmailHtml(otp),
+  const transporter = nodemailer.createTransport({
+    host: 'smtp.gmail.com',
+    port: 587,
+    secure: false,
+    auth: { user, pass },
   });
+
+  const from = process.env.SMTP_FROM || user;
+
+  const info = await Promise.race([
+    transporter.sendMail({
+      from: `"KashApp" <${from}>`,
+      to,
+      subject: 'Your KashApp Verification Code',
+      html: buildEmailHtml(otp),
+    }),
+    timeout(15000),
+  ]);
 
   console.log(`[EMAIL] OTP sent to ${to} — messageId=${info.messageId}`);
 }
@@ -59,7 +54,7 @@ function buildEmailHtml(otp) {
             <td align="center" style="background:#111827;padding:40px 40px 36px;">
               <div style="width:56px;height:56px;background:rgba(255,255,255,0.15);border-radius:16px;display:inline-flex;align-items:center;justify-content:center;font-size:28px;margin-bottom:16px;">&#x1F4B8;</div>
               <h1 style="margin:0;color:#ffffff;font-size:24px;font-weight:800;letter-spacing:-0.3px;">KashApp</h1>
-              <p style="margin:6px 0 0;color:rgba(255,255,255,0.7);font-size:13px;letter-spacing:0.5px;text-transform:uppercase;">Verification Code</p>
+              <p style="margin:0 0 0;color:rgba(255,255,255,0.7);font-size:13px;letter-spacing:0.5px;text-transform:uppercase;">Verification Code</p>
             </td>
           </tr>
           <tr>
