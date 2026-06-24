@@ -3,6 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js"
@@ -10,6 +13,7 @@
   "dependencies": {
     "better-sqlite3": "^11.0.0",
     "cors": "^2.8.5",
+    "dotenv": "^16.4.0",
     "express": "^4.21.0",
     "jsonwebtoken": "^9.0.2",
     "uuid": "^10.0.0"
