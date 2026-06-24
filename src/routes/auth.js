@@ -37,16 +37,14 @@ router.post('/send-otp', async (req, res) => {
   db.prepare(`DELETE FROM otps WHERE email = ?`).run(email);
   db.prepare(`INSERT INTO otps (email, code, expires_at) VALUES (?, ?, ?)`).run(email, code, expiresAt);
 
+  // Fire-and-forget: respond immediately, send email in background
   const RESEND_API_KEY = process.env.RESEND_API_KEY;
   const FROM_EMAIL = process.env.RESEND_FROM_EMAIL || 'onboarding@resend.dev';
 
   if (RESEND_API_KEY) {
-    try {
-      await sendEmail(RESEND_API_KEY, FROM_EMAIL, email, code);
-      console.log(`[EMAIL] OTP sent to ${email}`);
-    } catch (err) {
-      console.error(`[EMAIL] Failed to send to ${email}:`, err.message);
-    }
+    sendEmail(RESEND_API_KEY, FROM_EMAIL, email, code)
+      .then(() => console.log(`[EMAIL] Sent to ${email}`))
+      .catch(err => console.error(`[EMAIL] Failed to send to ${email}:`, err.message));
   } else {
     console.log(`[DEV] OTP for ${email}: ${code}`);
   }
@@ -60,22 +58,29 @@ router.post('/send-otp', async (req, res) => {
 
 async function sendEmail(apiKey, from, to, otp) {
   const html = buildEmailHtml(otp);
-  const res = await fetch('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      from,
-      to,
-      subject: 'Your KashApp Verification Code',
-      html,
-    }),
-  });
-  if (!res.ok) {
-    const body = await res.text();
-    throw new Error(`Resend ${res.status}: ${body}`);
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 10000);
+  try {
+    const res = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from,
+        to,
+        subject: 'Your KashApp Verification Code',
+        html,
+      }),
+      signal: controller.signal,
+    });
+    if (!res.ok) {
+      const body = await res.text();
+      throw new Error(`Resend ${res.status}: ${body}`);
+    }
+  } finally {
+    clearTimeout(timeout);
   }
 }
 
