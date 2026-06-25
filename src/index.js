@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import express from 'express';
 import cors from 'cors';
+import { initDb } from './db.js';
 import authRoutes from './routes/auth.js';
 import userRoutes from './routes/user.js';
 import transactionRoutes from './routes/transactions.js';
@@ -23,6 +24,13 @@ app.use('/api/balance', balanceRoutes);
 // Health check
 app.get('/api/health', (_, res) => res.json({ status: 'ok' }));
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`KashApp backend running on http://0.0.0.0:${PORT}`);
-});
+initDb()
+  .then(() => {
+    app.listen(PORT, '0.0.0.0', () => {
+      console.log(`KashApp backend running on http://0.0.0.0:${PORT}`);
+    });
+  })
+  .catch(err => {
+    console.error('Database initialization failed:', err);
+    process.exit(1);
+  });

@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { v4 as uuid } from 'uuid';
 import { createHash, randomInt } from 'crypto';
 import jwt from 'jsonwebtoken';
-import db from '../db.js';
+import pool from '../db.js';
 import { generateToken, authMiddleware } from '../middleware/auth.js';
 import { sendOtpEmail } from '../utils/email.js';
 
@@ -35,10 +35,9 @@ router.post('/send-otp', async (req, res) => {
   const code = generateOtp();
   const expiresAt = getExpiry();
 
-  db.prepare(`DELETE FROM otps WHERE email = ?`).run(email);
-  db.prepare(`INSERT INTO otps (email, code, expires_at) VALUES (?, ?, ?)`).run(email, code, expiresAt);
+  await pool.query(`DELETE FROM otps WHERE email = $1`, [email]);
+  await pool.query(`INSERT INTO otps (email, code, expires_at) VALUES ($1, $2, $3)`, [email, code, expiresAt]);
 
-  // Fire-and-forget: respond immediately, send email in background
   sendOtpEmail(email, code)
     .then(() => {})
     .catch(err => console.error(`[EMAIL] Failed to send to ${email}:`, err));
@@ -51,19 +50,24 @@ router.post('/send-otp', async (req, res) => {
 });
 
 // POST /api/auth/verify-otp
-router.post('/verify-otp', (req, res) => {
+router.post('/verify-otp', async (req, res) => {
   const { email, otp } = req.body;
   if (!email || !otp) return res.status(400).json({ message: 'Email and OTP are required' });
 
-  const row = db.prepare(`SELECT * FROM otps WHERE email = ? ORDER BY created_at DESC LIMIT 1`).get(email);
+  const { rows } = await pool.query(
+    `SELECT * FROM otps WHERE email = $1 ORDER BY created_at DESC LIMIT 1`,
+    [email],
+  );
+  const row = rows[0];
 
   if (!row) return res.status(400).json({ message: 'No OTP found for this email' });
   if (isExpired(row.expires_at)) return res.status(400).json({ message: 'OTP has expired' });
   if (row.code !== otp) return res.status(400).json({ message: 'Invalid OTP' });
 
-  db.prepare(`DELETE FROM otps WHERE email = ?`).run(email);
+  await pool.query(`DELETE FROM otps WHERE email = $1`, [email]);
 
-  const user = db.prepare(`SELECT * FROM users WHERE email = ?`).get(email);
+  const { rows: userRows } = await pool.query(`SELECT * FROM users WHERE email = $1`, [email]);
+  const user = userRows[0];
 
   if (!user) {
     const partialToken = generateToken({ email, isNewUser: true });
@@ -87,7 +91,7 @@ router.post('/verify-otp', (req, res) => {
 });
 
 // POST /api/auth/register
-router.post('/register', (req, res) => {
+router.post('/register', async (req, res) => {
   const { token, firstName, lastName, dob, cashtag, pin } = req.body;
 
   if (!token || !firstName || !lastName || !dob || !cashtag || !pin) {
@@ -109,12 +113,13 @@ router.post('/register', (req, res) => {
   const pinHash = hashPin(pin);
 
   try {
-    db.prepare(`
-      INSERT INTO users (id, email, first_name, last_name, cashtag, date_of_birth, pin_hash)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(id, payload.email, firstName, lastName, cashtag, dob, pinHash);
+    await pool.query(
+      `INSERT INTO users (id, email, first_name, last_name, cashtag, date_of_birth, pin_hash)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+      [id, payload.email, firstName, lastName, cashtag, dob, pinHash],
+    );
   } catch (err) {
-    if (err.message.includes('UNIQUE')) {
+    if (err.code === '23505') {
       return res.status(409).json({ message: 'Cashtag already taken' });
     }
     throw err;
@@ -136,8 +141,9 @@ router.post('/register', (req, res) => {
 });
 
 // GET /api/auth/me
-router.get('/me', authMiddleware, (req, res) => {
-  const user = db.prepare(`SELECT * FROM users WHERE id = ?`).get(req.user.userId);
+router.get('/me', authMiddleware, async (req, res) => {
+  const { rows } = await pool.query(`SELECT * FROM users WHERE id = $1`, [req.user.userId]);
+  const user = rows[0];
   if (!user) return res.status(404).json({ message: 'User not found' });
 
   res.json({

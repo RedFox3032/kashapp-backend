@@ -1,100 +1,91 @@
 import { Router } from 'express';
 import { v4 as uuid } from 'uuid';
-import db from '../db.js';
+import pool from '../db.js';
 import { authMiddleware } from '../middleware/auth.js';
 
 const router = Router();
 
 // GET /api/transactions
-router.get('/', authMiddleware, (req, res) => {
-  const rows = db.prepare(`
-    SELECT * FROM transactions WHERE user_id = ? ORDER BY created_at DESC LIMIT 50
-  `).all(req.user.userId);
-
-  res.json({
-    transactions: rows.map(t => ({
-      id: t.id,
-      name: t.counterparty_name,
-      subtitle: t.subtitle || '',
-      amount: t.amount,
-      isReceived: !!t.is_received,
-      date: t.created_at,
-    })),
-  });
+router.get('/', authMiddleware, async (req, res) => {
+  const { rows } = await pool.query(
+    `SELECT * FROM transactions WHERE user_id = $1 ORDER BY created_at DESC LIMIT 50`,
+    [req.user.userId],
+  );
+  res.json({ transactions: rows });
 });
 
 // POST /api/transactions/send
-router.post('/send', authMiddleware, (req, res) => {
+router.post('/send', authMiddleware, async (req, res) => {
   const { to, tag, amount, note } = req.body;
-  if (!to || amount === undefined || amount === null) return res.status(400).json({ message: 'Recipient and amount are required' });
-  if (Number(amount) <= 0) return res.status(400).json({ message: 'Amount must be greater than 0' });
+  if (!to && !tag) return res.status(400).json({ message: 'Recipient (to or tag) is required' });
+  if (amount === undefined || amount === null) return res.status(400).json({ message: 'Amount is required' });
 
-  const sender = db.prepare(`SELECT * FROM users WHERE id = ?`).get(req.user.userId);
-  if (!sender) return res.status(404).json({ message: 'User not found' });
-  if (sender.balance < Number(amount)) return res.status(400).json({ message: 'Insufficient balance' });
-
-  let recipient = null;
-  if (tag) {
-    const cleanTag = tag.replace(/^\$/, '');
-    recipient = db.prepare(`SELECT id FROM users WHERE email = ? OR cashtag = ?`).get(cleanTag, cleanTag);
+  // Recipient by id or cashtag
+  let recipient;
+  if (to) {
+    const { rows } = await pool.query(`SELECT * FROM users WHERE id = $1`, [to]);
+    recipient = rows[0];
+  } else {
+    const q = tag.replace(/^\$/, '');
+    const { rows } = await pool.query(`SELECT * FROM users WHERE cashtag = $1`, [q]);
+    recipient = rows[0];
   }
 
-  const txId = uuid();
+  if (!recipient) return res.status(404).json({ message: 'Recipient not found' });
 
-  db.prepare(`UPDATE users SET balance = balance - ? WHERE id = ?`).run(Number(amount), req.user.userId);
-  if (recipient) {
-    db.prepare(`UPDATE users SET balance = balance + ? WHERE id = ?`).run(Number(amount), recipient.id);
-  }
+  const senderRes = await pool.query(`SELECT * FROM users WHERE id = $1`, [req.user.userId]);
+  const sender = senderRes.rows[0];
+  if (!sender) return res.status(404).json({ message: 'Sender not found' });
 
-  db.prepare(`
-    INSERT INTO transactions (id, user_id, counterparty_name, subtitle, amount, is_received)
-    VALUES (?, ?, ?, ?, ?, 0)
-  `).run(txId, req.user.userId, to, note || '', Number(amount));
+  if (sender.balance < amount) return res.status(402).json({ message: 'Insufficient balance' });
 
-  if (recipient) {
-    db.prepare(`
-      INSERT INTO transactions (id, user_id, counterparty_name, subtitle, amount, is_received)
-      VALUES (?, ?, ?, ?, ?, 1)
-    `).run(uuid(), recipient.id, `${sender.first_name} ${sender.last_name}`.trim() || to, note || '', Number(amount));
-  }
+  const now = new Date().toISOString();
+  const sendId = uuid();
+  const receiveId = uuid();
+  const subtitle = note || `To ${recipient.first_name}`;
 
-  const updated = db.prepare(`SELECT balance FROM users WHERE id = ?`).get(req.user.userId);
+  await pool.query(`UPDATE users SET balance = balance - $1 WHERE id = $2`, [amount, sender.id]);
+  await pool.query(`UPDATE users SET balance = balance + $1 WHERE id = $2`, [amount, recipient.id]);
+
+  await pool.query(
+    `INSERT INTO transactions (id, user_id, counterparty_name, subtitle, amount, is_received, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [sendId, sender.id, `${recipient.first_name} ${recipient.last_name}`.trim(), subtitle, amount, false, now],
+  );
+
+  await pool.query(
+    `INSERT INTO transactions (id, user_id, counterparty_name, subtitle, amount, is_received, created_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+    [receiveId, recipient.id, `${sender.first_name} ${sender.last_name}`.trim(), subtitle, amount, true, now],
+  );
+
+  const { rows } = await pool.query(`SELECT * FROM users WHERE id = $1`, [sender.id]);
+  const updatedSender = rows[0];
 
   res.json({
-    transaction: {
-      id: txId,
-      name: to,
-      subtitle: note || '',
-      amount: Number(amount),
-      isReceived: false,
-      date: new Date().toISOString(),
-    },
-    newBalance: updated.balance,
+    message: 'Payment sent',
+    transactionId: sendId,
+    balance: updatedSender.balance,
   });
 });
 
 // POST /api/transactions/request
-router.post('/request', authMiddleware, (req, res) => {
-  const { from, amount, note } = req.body;
-  if (!from || amount === undefined || amount === null) return res.status(400).json({ message: 'Requester and amount are required' });
-  if (Number(amount) <= 0) return res.status(400).json({ message: 'Amount must be greater than 0' });
+router.post('/request', authMiddleware, async (req, res) => {
+  const { tag, amount, note } = req.body;
+  if (!tag) return res.status(400).json({ message: 'Recipient tag is required' });
+  if (!amount) return res.status(400).json({ message: 'Amount is required' });
 
-  const txId = uuid();
-  db.prepare(`
-    INSERT INTO transactions (id, user_id, counterparty_name, subtitle, amount, is_received)
-    VALUES (?, ?, ?, ?, ?, 0)
-  `).run(txId, req.user.userId, from, note || '', amount);
+  const q = tag.replace(/^\$/, '');
+  const { rows } = await pool.query(`SELECT * FROM users WHERE cashtag = $1`, [q]);
+  const recipient = rows[0];
 
-  res.json({
-    transaction: {
-      id: txId,
-      name: from,
-      subtitle: note || '',
-      amount,
-      isReceived: false,
-      date: new Date().toISOString(),
-    },
-  });
+  if (!recipient) return res.status(404).json({ message: 'Recipient not found' });
+
+  const senderRes = await pool.query(`SELECT * FROM users WHERE id = $1`, [req.user.userId]);
+  const sender = senderRes.rows[0];
+  if (!sender) return res.status(404).json({ message: 'User not found' });
+
+  res.json({ message: 'Payment request sent' });
 });
 
 export default router;
